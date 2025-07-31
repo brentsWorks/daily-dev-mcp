@@ -7,6 +7,8 @@ const logger = new Logger("Config:Env");
 const envSchema = z.object({
   NODE_ENV: z.string(),
   REDIS_URL: z.string(),
+  SMITHERY_GITHUB_API_KEY: z.string(),
+  GOOGLE_API_KEY: z.string(),
 });
 
 // Function to validate environment variables
@@ -16,6 +18,8 @@ const validateEnv = () => {
     const env = {
       NODE_ENV: process.env.NODE_ENV,
       REDIS_URL: process.env.REDIS_URL,
+      SMITHERY_GITHUB_API_KEY: process.env.SMITHERY_GITHUB_API_KEY,
+      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
     };
     const parsed = envSchema.parse(env);
     logger.info("Environment variables validated successfully");

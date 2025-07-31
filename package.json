@@ -8,6 +8,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@smithery/sdk": "^1.5.5",
     "@vercel/mcp-adapter": "0.8.2",
     "next": "15.2.4",
     "react": "^19.1.0",
