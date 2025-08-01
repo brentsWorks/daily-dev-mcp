@@ -140,11 +140,13 @@ GitHub Data: ${JSON.stringify(githubData, null, 2)}
 IMPORTANT: Respond with ONLY valid JSON format. Do not include any markdown formatting, headers, or explanatory text.
 
 Return a JSON object with the following structure:
+IMPORTANT: If no security issues are found, return empty arrays for findings. Do not create fake or generic findings.
+
 {
   "executive_summary": {
     "overall_risk": "Low|Medium|High",
     "security_posture": "string describing overall security state",
-    "key_concerns": ["array of main security concerns"]
+    "key_concerns": ["array of main security concerns - empty if none"]
   },
   "critical_findings": [
     {
@@ -163,10 +165,10 @@ Return a JSON object with the following structure:
     }
   ],
   "risk_analysis": {
-    "high_risk_items": ["array of high risk items"],
-    "medium_risk_items": ["array of medium risk items"],
-    "low_risk_items": ["array of low risk items"],
-    "risk_factors": ["array of contributing risk factors"]
+    "high_risk_items": ["array of high risk items - empty if none"],
+    "medium_risk_items": ["array of medium risk items - empty if none"],
+    "low_risk_items": ["array of low risk items - empty if none"],
+    "risk_factors": ["array of contributing risk factors - empty if none"]
   },
   "recommendations": [
     {
