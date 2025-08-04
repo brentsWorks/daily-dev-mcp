@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createSmitheryUrl } from "@smithery/sdk";
 import { OpenAI } from "openai";
 import { env } from "../config/env";
+import { SecurityFileFilter, SecurityFile } from "./securityFileFilter";
 
 const geminiClient = new OpenAI({ 
   apiKey: env.GOOGLE_API_KEY,
@@ -89,6 +90,185 @@ export class GitHubSecurityClient {
 
   isConnected(): boolean {
     return this.client !== null;
+  }
+}
+
+// New function for targeted data collection using SecurityFileFilter
+async function collectTargetedSecurityData(
+  client: GitHubSecurityClient,
+  owner: string,
+  repo: string,
+  analysisType: 'secrets' | 'vulnerabilities' | 'dependencies' | 'code-patterns'
+): Promise<any> {
+  const results: {
+    repository: string;
+    analysis_type: string;
+    scan_date: string;
+    targeted_files: SecurityFile[];
+    findings: Array<{
+      type: string;
+      data?: any;
+      description?: string;
+      error?: string;
+    }>;
+  } = {
+    repository: `${owner}/${repo}`,
+    analysis_type: analysisType,
+    scan_date: new Date().toISOString(),
+    targeted_files: [],
+    findings: []
+  };
+
+  try {
+    // Step 1: Get repository structure to identify security-relevant files
+    console.log(`🔍 Identifying security-relevant files for ${owner}/${repo}...`);
+    
+    // Get repository details first
+    const repoDetails = await client.callTool("get_repository", { owner, repo });
+    results.findings.push({
+      type: "REPOSITORY_DETAILS",
+      data: repoDetails,
+      description: "Repository information for analysis"
+    });
+
+    // Step 2: Get file listing (this would need to be implemented based on available GitHub API tools)
+    // For now, we'll use targeted searches based on analysis type
+    const filterOptions = SecurityFileFilter.getAnalysisFilters(analysisType);
+    
+    // Step 3: Perform targeted searches based on analysis type
+    switch (analysisType) {
+      case 'secrets':
+        // Search for secret-related files specifically
+        try {
+          const secretFiles = await client.callTool("search_code", {
+            q: `repo:${owner}/${repo} filename:.env filename:secrets filename:credentials filename:keys`,
+            per_page: filterOptions.maxFiles || 20
+          });
+          
+          // Filter the results to only include security-relevant files
+          let securityFiles: SecurityFile[] = [];
+          if (secretFiles.items) {
+            const filePaths = secretFiles.items.map((item: any) => item.path);
+            securityFiles = SecurityFileFilter.filterFiles(filePaths, filterOptions);
+            results.targeted_files = securityFiles;
+          }
+          
+          results.findings.push({
+            type: "TARGETED_SECRET_SEARCH",
+            data: secretFiles,
+            description: `Targeted search for ${securityFiles.length} security-relevant files`
+          });
+        } catch (error) {
+          results.findings.push({
+            type: "SECRET_SEARCH_ERROR",
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+        break;
+
+      case 'vulnerabilities':
+        // Search for security-related issues and vulnerable dependencies
+        try {
+          // Get security issues
+          const securityIssues = await client.callTool("search_issues", {
+            q: `repo:${owner}/${repo} security vulnerability CVE`,
+            per_page: 10
+          });
+          
+          // Get dependency files
+          const dependencyFiles = await client.callTool("search_code", {
+            q: `repo:${owner}/${repo} filename:package.json filename:requirements.txt filename:pom.xml`,
+            per_page: filterOptions.maxFiles || 15
+          });
+          
+          let securityFiles: SecurityFile[] = [];
+          if (dependencyFiles.items) {
+            const filePaths = dependencyFiles.items.map((item: any) => item.path);
+            securityFiles = SecurityFileFilter.filterFiles(filePaths, filterOptions);
+            results.targeted_files = securityFiles;
+          }
+          
+          results.findings.push({
+            type: "SECURITY_ISSUES",
+            data: securityIssues,
+            description: "Security-related issues"
+          });
+          
+          results.findings.push({
+            type: "TARGETED_DEPENDENCY_SEARCH",
+            data: dependencyFiles,
+            description: `Targeted search for ${securityFiles.length} dependency files`
+          });
+        } catch (error) {
+          results.findings.push({
+            type: "VULNERABILITY_SEARCH_ERROR",
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+        break;
+
+      case 'dependencies':
+        // Focus on dependency files
+        try {
+          const dependencyFiles = await client.callTool("search_code", {
+            q: `repo:${owner}/${repo} filename:package.json filename:requirements.txt filename:pom.xml filename:Gemfile filename:Cargo.toml`,
+            per_page: filterOptions.maxFiles || 10
+          });
+          
+          let securityFiles: SecurityFile[] = [];
+          if (dependencyFiles.items) {
+            const filePaths = dependencyFiles.items.map((item: any) => item.path);
+            securityFiles = SecurityFileFilter.filterFiles(filePaths, filterOptions);
+            results.targeted_files = securityFiles;
+          }
+          
+          results.findings.push({
+            type: "TARGETED_DEPENDENCY_SEARCH",
+            data: dependencyFiles,
+            description: `Targeted search for ${securityFiles.length} dependency files`
+          });
+        } catch (error) {
+          results.findings.push({
+            type: "DEPENDENCY_SEARCH_ERROR",
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+        break;
+
+      case 'code-patterns':
+        // Search for security-relevant code patterns in targeted files
+        try {
+          const codePatterns = await client.callTool("search_code", {
+            q: `repo:${owner}/${repo} "SQL injection" "eval(" "exec(" "dangerous" filename:config filename:security`,
+            per_page: filterOptions.maxFiles || 25
+          });
+          
+          let securityFiles: SecurityFile[] = [];
+          if (codePatterns.items) {
+            const filePaths = codePatterns.items.map((item: any) => item.path);
+            securityFiles = SecurityFileFilter.filterFiles(filePaths, filterOptions);
+            results.targeted_files = securityFiles;
+          }
+          
+          results.findings.push({
+            type: "TARGETED_CODE_PATTERNS",
+            data: codePatterns,
+            description: `Targeted search for ${securityFiles.length} files with security patterns`
+          });
+        } catch (error) {
+          results.findings.push({
+            type: "CODE_PATTERNS_ERROR",
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+        break;
+    }
+
+    console.log(`✅ Targeted data collection completed. Found ${results.targeted_files.length} security-relevant files.`);
+    return results;
+  } catch (error) {
+    console.error('Error in targeted data collection:', error);
+    throw error;
   }
 }
 
@@ -244,116 +424,23 @@ export async function analyzeRepositorySecurity(
   try {
     await client.connect();
     
-    const results: {
-      repository: string;
-      analysis_type: string;
-      scan_date: string;
-      findings: Array<{
-        type: string;
-        data?: any;
-        description?: string;
-        error?: string;
-      }>;
-    } = {
-      repository: `${owner}/${repo}`,
-      analysis_type: analysisType,
-      scan_date: new Date().toISOString(),
-      findings: []
-    };
-
-    // Perform security analysis based on type
-    switch (analysisType) {
-      case 'secrets':
-        // Search for potential secrets in code
-        try {
-          const secretSearch = await client.callTool("search_code", {
-            q: `repo:${owner}/${repo} API_KEY password secret token credential`,
-            per_page: 10
-          });
-          results.findings.push({
-            type: "SECRET_SEARCH",
-            data: secretSearch,
-            description: "Code search for potential secrets"
-          });
-        } catch (error) {
-          results.findings.push({
-            type: "SECRET_SEARCH_ERROR",
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
-        break;
-
-      case 'vulnerabilities':
-        // Search for security-related issues
-        try {
-          const securityIssues = await client.callTool("search_issues", {
-            q: `repo:${owner}/${repo} security vulnerability CVE`,
-            per_page: 10
-          });
-          results.findings.push({
-            type: "SECURITY_ISSUES",
-            data: securityIssues,
-            description: "Security-related issues"
-          });
-        } catch (error) {
-          results.findings.push({
-            type: "SECURITY_ISSUES_ERROR",
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
-        break;
-
-      case 'dependencies':
-        // Get repository details to analyze dependencies
-        try {
-          const repoDetails = await client.callTool("get_repository", { owner, repo });
-          results.findings.push({
-            type: "REPOSITORY_DETAILS",
-            data: repoDetails,
-            description: "Repository information for dependency analysis"
-          });
-        } catch (error) {
-          results.findings.push({
-            type: "REPOSITORY_DETAILS_ERROR",
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
-        break;
-
-      case 'code-patterns':
-        // Search for common security code patterns
-        try {
-          const codePatterns = await client.callTool("search_code", {
-            q: `repo:${owner}/${repo} SQL injection eval exec dangerous`,
-            per_page: 10
-          });
-          results.findings.push({
-            type: "CODE_PATTERNS",
-            data: codePatterns,
-            description: "Potentially dangerous code patterns"
-          });
-        } catch (error) {
-          results.findings.push({
-            type: "CODE_PATTERNS_ERROR",
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
-        break;
-    }
-
+    // Use targeted data collection instead of broad searches
+    console.log(`🎯 Starting targeted security analysis for ${owner}/${repo} (${analysisType})...`);
+    const targetedData = await collectTargetedSecurityData(client, owner, repo, analysisType);
+    
     await client.disconnect();
     
-    // Perform AI-powered security analysis on the collected data
+    // Perform AI-powered security analysis on the targeted data
     console.log(`🤖 Performing AI security analysis for ${owner}/${repo}...`);
-    const aiAnalysis = await analyzeSecurityWithAI(results, analysisType, `${owner}/${repo}`);
+    const aiAnalysis = await analyzeSecurityWithAI(targetedData, analysisType, `${owner}/${repo}`);
     
-    // Combine GitHub data with AI analysis
+    // Combine targeted data with AI analysis
     const enhancedResults = {
-      ...results,
+      ...targetedData,
       ai_analysis: aiAnalysis
     };
     
-    console.log(`✅ AI security analysis completed for ${owner}/${repo}`);
+    console.log(`✅ Targeted security analysis completed for ${owner}/${repo}`);
     return enhancedResults;
   } catch (error) {
     console.error('Error analyzing repository security:', error);
