@@ -4,6 +4,8 @@ import { createSmitheryUrl } from "@smithery/sdk";
 import { OpenAI } from "openai";
 import { env } from "../config/env";
 import { SecurityFileFilter, SecurityFile } from "./securityFileFilter";
+import { AnalysisChunker } from './analysisChunker';
+import { StreamingAnalyzer } from './streamingAnalyzer';
 
 const geminiClient = new OpenAI({ 
   apiKey: env.GOOGLE_API_KEY,
@@ -410,6 +412,203 @@ IMPORTANT: If no security issues are found, return empty arrays for findings. Do
   }
 }
 
+/**
+ * Analyze security with AI using chunked processing for better efficiency
+ */
+export async function analyzeSecurityWithAIChunked(
+  githubData: any,
+  analysisType: string,
+  repository: string
+): Promise<any> {
+  console.log(`🔧 Starting chunked AI analysis for ${repository}...`);
+  
+  // Extract targeted files from the GitHub data
+  const targetedFiles = githubData.targeted_files || [];
+  
+  if (targetedFiles.length === 0) {
+    console.log(`📝 No targeted files found for ${repository}, using basic AI analysis`);
+    return await analyzeSecurityWithAI(githubData, analysisType, repository);
+  }
+  
+  // Create chunks from the targeted files
+  const chunker = new AnalysisChunker();
+  const chunks = chunker.chunkByType(targetedFiles);
+  
+  console.log(`📦 Created ${chunks.length} chunks: ${chunker.getChunkSummary(chunks)}`);
+  
+  if (chunks.length === 0) {
+    console.log(`📝 No chunks created for ${repository}, using basic AI analysis`);
+    return await analyzeSecurityWithAI(githubData, analysisType, repository);
+  }
+  
+  // Create streaming analyzer with console callbacks
+  const streamingAnalyzer = new StreamingAnalyzer(analysisType, repository, {
+    onProgress: StreamingAnalyzer.createConsoleProgressCallback(),
+    onChunkComplete: StreamingAnalyzer.createConsoleChunkCallback()
+  });
+  
+  // Process chunks with streaming analysis
+  const aggregatedResults = await streamingAnalyzer.processChunks(chunks);
+  
+  // Now perform AI analysis on each chunk individually
+  const chunkAIResults = [];
+  let totalTokensUsed = 0;
+  
+  console.log(`🤖 Performing AI analysis on ${chunks.length} chunks...`);
+  
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    console.log(`🧠 Analyzing chunk ${i + 1}/${chunks.length}: ${chunk.type}`);
+    
+    try {
+      // Create chunk-specific data for AI analysis
+      const chunkData = {
+        repository,
+        analysis_type: analysisType,
+        chunk_type: chunk.type,
+        chunk_priority: chunk.priority,
+        files: chunk.files,
+        chunk_description: chunk.description
+      };
+      
+      // Perform AI analysis on this chunk
+      const chunkAIResult = await analyzeSecurityWithAI(
+        chunkData, 
+        analysisType, 
+        `${repository} (${chunk.type} chunk)`
+      );
+      
+      chunkAIResults.push({
+        chunk_id: chunk.id,
+        chunk_type: chunk.type,
+        chunk_priority: chunk.priority,
+        ai_analysis: chunkAIResult,
+        processing_stats: aggregatedResults.chunkResults[i]
+      });
+      
+      totalTokensUsed += chunkAIResult.tokens_used || 0;
+      
+      console.log(`✅ AI analysis completed for ${chunk.type} chunk`);
+      
+    } catch (error) {
+      console.error(`❌ AI analysis failed for ${chunk.type} chunk:`, error);
+      chunkAIResults.push({
+        chunk_id: chunk.id,
+        chunk_type: chunk.type,
+        chunk_priority: chunk.priority,
+        ai_analysis: { error: `AI analysis failed: ${error}` },
+        processing_stats: aggregatedResults.chunkResults[i]
+      });
+    }
+  }
+  
+  // Aggregate AI results into a comprehensive analysis
+  const aggregatedAI = aggregateChunkAIResults(chunkAIResults, repository, analysisType);
+  
+  console.log(`🎉 Chunked AI analysis completed for ${repository}`);
+  console.log(`📊 Total tokens used: ~${totalTokensUsed}`);
+  
+  return {
+    ai_analysis: aggregatedAI,
+    chunked_analysis: {
+      total_chunks: chunks.length,
+      processed_chunks: aggregatedResults.processedChunks,
+      failed_chunks: aggregatedResults.failedChunks,
+      chunk_results: chunkAIResults,
+      streaming_results: aggregatedResults,
+      total_tokens_used: totalTokensUsed
+    },
+    model_used: "gemini-2.0-flash",
+    analysis_timestamp: new Date().toISOString(),
+    original_data: githubData
+  };
+}
+
+/**
+ * Aggregate AI results from multiple chunks into a comprehensive analysis
+ */
+function aggregateChunkAIResults(
+  chunkAIResults: any[], 
+  repository: string, 
+  analysisType: string
+): any {
+  const allFindings = [];
+  const allRecommendations = [];
+  const allRiskFactors = [];
+  let totalScore = 0;
+  let validScores = 0;
+  
+  // Collect all findings and recommendations from chunks
+  for (const chunkResult of chunkAIResults) {
+    const aiAnalysis = chunkResult.ai_analysis?.ai_analysis;
+    if (!aiAnalysis) continue;
+    
+    // Aggregate critical findings
+    if (aiAnalysis.critical_findings) {
+      allFindings.push(...aiAnalysis.critical_findings.map((f: any) => ({
+        ...f,
+        chunk_type: chunkResult.chunk_type,
+        chunk_priority: chunkResult.chunk_priority
+      })));
+    }
+    
+    // Aggregate recommendations
+    if (aiAnalysis.recommendations) {
+      allRecommendations.push(...aiAnalysis.recommendations);
+    }
+    
+    // Aggregate risk factors
+    if (aiAnalysis.risk_analysis?.risk_factors) {
+      allRiskFactors.push(...aiAnalysis.risk_analysis.risk_factors);
+    }
+    
+    // Aggregate security scores
+    if (aiAnalysis.security_score?.score) {
+      totalScore += aiAnalysis.security_score.score;
+      validScores++;
+    }
+  }
+  
+  // Calculate overall risk based on findings
+  let overallRisk = 'Low';
+  if (allFindings.some((f: any) => f.severity === 'Critical')) {
+    overallRisk = 'Critical';
+  } else if (allFindings.some((f: any) => f.severity === 'High')) {
+    overallRisk = 'High';
+  } else if (allFindings.some((f: any) => f.severity === 'Medium')) {
+    overallRisk = 'Medium';
+  }
+  
+  // Calculate average security score
+  const averageScore = validScores > 0 ? Math.round(totalScore / validScores) : 7;
+  
+  return {
+    executive_summary: {
+      overall_risk: overallRisk,
+      security_posture: `Comprehensive security analysis of ${repository} using chunked processing. Found ${allFindings.length} security issues across ${chunkAIResults.length} file type categories.`,
+      key_concerns: allFindings.filter((f: any) => f.severity === 'Critical' || f.severity === 'High').map((f: any) => f.finding || f.title)
+    },
+    critical_findings: allFindings.filter((f: any) => f.severity === 'Critical' || f.severity === 'High'),
+    vulnerability_assessment: allFindings,
+    risk_analysis: {
+      high_risk_items: allFindings.filter((f: any) => f.severity === 'High').map((f: any) => f.finding || f.title),
+      medium_risk_items: allFindings.filter((f: any) => f.severity === 'Medium').map((f: any) => f.finding || f.title),
+      low_risk_items: allFindings.filter((f: any) => f.severity === 'Low').map((f: any) => f.finding || f.title),
+      risk_factors: [...new Set(allRiskFactors)] // Remove duplicates
+    },
+    recommendations: allRecommendations.slice(0, 10), // Limit to top 10 recommendations
+    security_score: {
+      score: averageScore,
+      justification: `Aggregated score from ${validScores} chunk analyses. Score reflects overall security posture across all file types.`,
+      factors: [
+        `Analyzed ${chunkAIResults.length} file type categories`,
+        `Found ${allFindings.length} total security issues`,
+        `Chunked processing for better accuracy`
+      ]
+    }
+  };
+}
+
 // Security-specific helper functions
 export async function analyzeRepositorySecurity(
   serverUrl: string,
@@ -430,9 +629,9 @@ export async function analyzeRepositorySecurity(
     
     await client.disconnect();
     
-    // Perform AI-powered security analysis on the targeted data
-    console.log(`🤖 Performing AI security analysis for ${owner}/${repo}...`);
-    const aiAnalysis = await analyzeSecurityWithAI(targetedData, analysisType, `${owner}/${repo}`);
+    // Perform AI-powered security analysis using chunked processing
+    console.log(`🤖 Performing chunked AI security analysis for ${owner}/${repo}...`);
+    const aiAnalysis = await analyzeSecurityWithAIChunked(targetedData, analysisType, `${owner}/${repo}`);
     
     // Combine targeted data with AI analysis
     const enhancedResults = {
